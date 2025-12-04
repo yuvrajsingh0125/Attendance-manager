@@ -1,0 +1,318 @@
+/*
+ * ESP32 with RC522 RFID/NFC Reader + LED + Firebase Cloud Logging
+ * 
+ * Hardware Connections:
+ * RC522 Module -> ESP32
+ * 3.3V         -> 3.3V
+ * GND          -> GND
+ * SDA (SS)     -> GPIO 5
+ * SCK          -> GPIO 18
+ * MOSI         -> GPIO 23
+ * MISO         -> GPIO 19
+ * RST          -> GPIO 27
+ * IRQ          -> Not used
+ * 
+ * LED Connection (with 470Ω resistor):
+ * Red LED      -> GPIO 2  -> 470Ω Resistor -> GND
+ * 
+ * LED Patterns:
+ * - Access GRANTED: Solid ON for 2 seconds
+ * - Access DENIED:  Fast blinking 5 times
+ */
+
+#include <SPI.h>
+#include <MFRC522.h>
+#include <WiFi.h>
+#include <Firebase_ESP_Client.h>
+#include "addons/TokenHelper.h"
+#include "addons/RTDBHelper.h"
+
+// WiFi credentials
+#define WIFI_SSID "Pixel 6"
+#define WIFI_PASSWORD "abcdefgh"
+
+Firebase project credentials
+#define API_KEY "AIzaSyD6WlOiIgdG19o-yP-xozjVl85N1m9nGbQ"
+#define DATABASE_URL "https://iot-rfid-89e01-default-rtdb.asia-southeast1.firebasedatabase.app"
+
+// Firebase user credentials (for authentication)
+#define USER_EMAIL "yuvismail2802@gmail.com"
+#define USER_PASSWORD "YuvrajM*2321125*"
+
+// Define RC522 pins
+#define SS_PIN 5      // SDA pin
+#define RST_PIN 27    // Reset pin
+
+// Define LED pin
+#define RED_LED 2     // Status LED
+
+// Create MFRC522 instance
+MFRC522 rfid(SS_PIN, RST_PIN);
+
+// Firebase objects
+FirebaseData fbdo;
+FirebaseAuth auth;
+FirebaseConfig config;
+
+bool signupOK = false;
+unsigned long sendDataPrevMillis = 0;
+
+// Array to store known authorized UIDs
+byte authorizedUIDs[][4] = {
+  {0x79, 0x9C, 0x15, 0x05},  // Your MIFARE 1KB card
+  {0xDE, 0xAD, 0xBE, 0xEF},  // Example UID 1 (you can remove this)
+  {0xCA, 0xFE, 0xBA, 0xBE}   // Example UID 2 (you can remove this)
+};
+
+// Statistics counters
+int totalScans = 0;
+int grantedCount = 0;
+int deniedCount = 0;
+
+void setup() {
+  // Initialize serial communication
+  Serial.begin(115200);
+  
+  // Initialize LED pin
+  pinMode(RED_LED, OUTPUT);
+  digitalWrite(RED_LED, LOW);
+  
+  // LED startup test
+  Serial.println("Testing LED...");
+  for (int i = 0; i < 3; i++) {
+    digitalWrite(RED_LED, HIGH);
+    delay(200);
+    digitalWrite(RED_LED, LOW);
+    delay(200);
+  }
+  
+  // Initialize SPI bus
+  SPI.begin();
+  
+  // Initialize MFRC522
+  rfid.PCD_Init();
+  rfid.PCD_SetAntennaGain(rfid.RxGain_max);
+  
+  Serial.println("\n=================================");
+  Serial.println("ESP32 RFID Access Control System");
+  Serial.println("with Firebase Cloud Logging");
+  Serial.println("=================================\n");
+  
+  // Print RC522 version
+  byte version = rfid.PCD_ReadRegister(rfid.VersionReg);
+  Serial.print("MFRC522 Version: 0x");
+  Serial.println(version, HEX);
+  
+  // Connect to WiFi
+  Serial.print("\nConnecting to WiFi");
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  
+  int wifiTimeout = 0;
+  while (WiFi.status() != WL_CONNECTED && wifiTimeout < 20) {
+    delay(500);
+    Serial.print(".");
+    wifiTimeout++;
+  }
+  
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\n✓ WiFi Connected!");
+    Serial.print("IP Address: ");
+    Serial.println(WiFi.localIP());
+  } else {
+    Serial.println("\n✗ WiFi Connection Failed!");
+    Serial.println("System will work offline (no cloud logging)");
+  }
+  
+  // Configure Firebase
+  config.api_key = API_KEY;
+  config.database_url = DATABASE_URL;
+  
+  // Sign in to Firebase
+  auth.user.email = USER_EMAIL;
+  auth.user.password = USER_PASSWORD;
+  
+  config.token_status_callback = tokenStatusCallback;
+  
+  Firebase.begin(&config, &auth);
+  Firebase.reconnectWiFi(true);
+  
+  // Check if signup successful
+  if (Firebase.ready()) {
+    signupOK = true;
+    Serial.println("✓ Firebase Connected!");
+    
+    // Initialize statistics in Firebase
+    initializeFirebaseStats();
+  } else {
+    Serial.println("✗ Firebase Connection Failed!");
+    Serial.println("System will work offline");
+  }
+  
+  Serial.println("\nSystem Ready! Waiting for cards...\n");
+}
+
+void loop() {
+  // Look for new cards
+  if (!rfid.PICC_IsNewCardPresent()) {
+    return;
+  }
+  
+  // Select one of the cards
+  if (!rfid.PICC_ReadCardSerial()) {
+    return;
+  }
+  
+  // Get timestamp
+  unsigned long currentTime = millis();
+  totalScans++;
+  
+  // Card detected
+  Serial.println("\n***** Card Detected *****");
+  printTimestamp(currentTime);
+  
+  // Print Card type
+  MFRC522::PICC_Type piccType = rfid.PICC_GetType(rfid.uid.sak);
+  Serial.print("Card Type: ");
+  Serial.println(rfid.PICC_GetTypeName(piccType));
+  
+  // Print UID
+  Serial.print("UID: ");
+  String uidString = "";
+  for (byte i = 0; i < rfid.uid.size; i++) {
+    Serial.print(rfid.uid.uidByte[i] < 0x10 ? " 0" : " ");
+    Serial.print(rfid.uid.uidByte[i], HEX);
+    uidString += String(rfid.uid.uidByte[i], HEX);
+    if (i < rfid.uid.size - 1) uidString += ":";
+  }
+  Serial.println();
+  
+  // Check if card is authorized
+  bool accessGranted = isAuthorized(rfid.uid.uidByte, rfid.uid.size);
+  
+  if (accessGranted) {
+    Serial.println(">>> ACCESS GRANTED <<<");
+    grantedCount++;
+    
+    // Turn on RED LED solid for 2 seconds
+    digitalWrite(RED_LED, HIGH);
+    delay(2000);
+    digitalWrite(RED_LED, LOW);
+    
+  } else {
+    Serial.println(">>> ACCESS DENIED <<<");
+    deniedCount++;
+    
+    // Flash RED LED rapidly 5 times
+    for (int i = 0; i < 5; i++) {
+      digitalWrite(RED_LED, HIGH);
+      delay(150);
+      digitalWrite(RED_LED, LOW);
+      delay(150);
+    }
+  }
+  
+  // Upload to Firebase
+  if (WiFi.status() == WL_CONNECTED && Firebase.ready() && signupOK) {
+    uploadToFirebase(uidString, accessGranted, currentTime);
+  } else {
+    Serial.println("⚠ Cloud logging unavailable (offline)");
+  }
+  
+  Serial.print("Total Scans: ");
+  Serial.print(totalScans);
+  Serial.print(" | Granted: ");
+  Serial.print(grantedCount);
+  Serial.print(" | Denied: ");
+  Serial.println(deniedCount);
+  Serial.println("*************************\n");
+  
+  // Halt PICC
+  rfid.PICC_HaltA();
+  rfid.PCD_StopCrypto1();
+  
+  delay(500);
+}
+
+// Upload access log to Firebase
+void uploadToFirebase(String uid, bool granted, unsigned long timestamp) {
+  Serial.print("Uploading to Firebase... ");
+  
+  // Create unique key using timestamp
+  String path = "/accessLogs/" + String(timestamp);
+  
+  // Create JSON object
+  FirebaseJson json;
+  json.add("uid", uid);
+  json.add("status", granted ? "GRANTED" : "DENIED");
+  json.add("timestamp", (int)(timestamp / 1000)); // seconds
+  json.add("date", getFormattedDate());
+  
+  // Upload to Firebase
+  if (Firebase.RTDB.setJSON(&fbdo, path.c_str(), &json)) {
+    Serial.println("✓ Success!");
+    
+    // Update statistics
+    updateFirebaseStats();
+  } else {
+    Serial.println("✗ Failed!");
+    Serial.println("Reason: " + fbdo.errorReason());
+  }
+}
+
+// Initialize statistics in Firebase
+void initializeFirebaseStats() {
+  if (!Firebase.RTDB.getInt(&fbdo, "/stats/totalScans")) {
+    Firebase.RTDB.setInt(&fbdo, "/stats/totalScans", 0);
+    Firebase.RTDB.setInt(&fbdo, "/stats/granted", 0);
+    Firebase.RTDB.setInt(&fbdo, "/stats/denied", 0);
+  }
+}
+
+// Update statistics in Firebase
+void updateFirebaseStats() {
+  Firebase.RTDB.setInt(&fbdo, "/stats/totalScans", totalScans);
+  Firebase.RTDB.setInt(&fbdo, "/stats/granted", grantedCount);
+  Firebase.RTDB.setInt(&fbdo, "/stats/denied", deniedCount);
+}
+
+// Get formatted date string
+String getFormattedDate() {
+  unsigned long epochTime = millis() / 1000;
+  // This is a simple implementation - for accurate time, use NTP
+  return String(epochTime);
+}
+
+// Check if UID is authorized
+bool isAuthorized(byte *uid, byte uidSize) {
+  for (int i = 0; i < sizeof(authorizedUIDs) / sizeof(authorizedUIDs[0]); i++) {
+    bool match = true;
+    for (byte j = 0; j < uidSize && j < 4; j++) {
+      if (uid[j] != authorizedUIDs[i][j]) {
+        match = false;
+        break;
+      }
+    }
+    if (match) return true;
+  }
+  return false;
+}
+
+// Print timestamp
+void printTimestamp(unsigned long ms) {
+  unsigned long seconds = ms / 1000;
+  unsigned long minutes = seconds / 60;
+  unsigned long hours = minutes / 60;
+  unsigned long days = hours / 24;
+  
+  Serial.print("Time: ");
+  if (days > 0) {
+    Serial.print(days);
+    Serial.print("d ");
+  }
+  Serial.print(hours % 24);
+  Serial.print("h ");
+  Serial.print(minutes % 60);
+  Serial.print("m ");
+  Serial.print(seconds % 60);
+  Serial.println("s");
+}
