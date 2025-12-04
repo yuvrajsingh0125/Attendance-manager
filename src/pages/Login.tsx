@@ -1,5 +1,6 @@
+// src/pages/Login.tsx
 import { useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams, Navigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -7,11 +8,18 @@ import { Card } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
 import { CreditCard, ArrowLeft } from "lucide-react";
+// --- FIREBASE IMPORTS ---
+import { signInWithEmailAndPassword, createUserWithEmailAndPassword } from "firebase/auth";
+import { ref, set } from "firebase/database";
+import { auth, db } from "@/lib/firebase"; 
+import { useAuth } from "@/hooks/use-auth";
+// ----------------------------
 
 const Login = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const role = searchParams.get("role") || "student";
+  const { user, loading } = useAuth(); 
   
   const [loginData, setLoginData] = useState({ email: "", password: "" });
   const [signupData, setSignupData] = useState({ 
@@ -20,22 +28,38 @@ const Login = () => {
     confirmPassword: "",
     firstName: "",
     lastName: "",
-    rfidCard: ""
+    rfidCard: "" // Key data point for the ESP32 system
   });
 
-  const handleLogin = (e: React.FormEvent) => {
+  if (!loading && user) {
+    return <Navigate to={`/dashboard/${role}`} replace />;
+  }
+
+  // --- EXISTING LOGIN HANDLER (for reference) ---
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    
-    // Demo login - in production, this would validate against backend
-    if (loginData.email && loginData.password) {
+    if (!loginData.email || !loginData.password) {
+      toast.error("Please enter both email and password.");
+      return;
+    }
+    try {
+      await signInWithEmailAndPassword(auth, loginData.email, loginData.password);
       toast.success("Login successful!");
-      navigate(`/dashboard/${role}`);
-    } else {
-      toast.error("Please fill in all fields");
+      navigate(`/dashboard/${role}`); 
+    } catch (error: any) {
+      console.error("Firebase Login Error:", error);
+      let errorMessage = "Login failed. Please check your credentials.";
+      if (error.code === 'auth/invalid-credential' || error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password') {
+        errorMessage = "Invalid email or password.";
+      } else if (error.code === 'auth/too-many-requests') {
+        errorMessage = "Access temporarily blocked due to too many failed attempts.";
+      }
+      toast.error(errorMessage);
     }
   };
 
-  const handleSignup = (e: React.FormEvent) => {
+  // --- NEW SIGNUP HANDLER ---
+  const handleSignup = async (e: React.FormEvent) => {
     e.preventDefault();
     
     if (signupData.password !== signupData.confirmPassword) {
@@ -43,14 +67,46 @@ const Login = () => {
       return;
     }
 
-    // Demo signup
-    if (signupData.email && signupData.password && signupData.firstName && signupData.lastName) {
-      toast.success("Account created successfully!");
-      navigate(`/dashboard/${role}`);
-    } else {
+    if (!signupData.email || !signupData.password || !signupData.firstName || !signupData.lastName || !signupData.rfidCard) {
       toast.error("Please fill in all required fields");
+      return;
+    }
+
+    try {
+      // 1. Create the user account in Firebase Authentication
+      const userCredential = await createUserWithEmailAndPassword(auth, signupData.email, signupData.password);
+      const newUser = userCredential.user;
+
+      // 2. Save user profile data to Realtime Database
+      // We use the new user's unique UID as the key in the database
+      const userProfileRef = ref(db, `users/${newUser.uid}`);
+      await set(userProfileRef, {
+        firstName: signupData.firstName,
+        lastName: signupData.lastName,
+        email: signupData.email,
+        role: role, // Store the user's intended role
+        rfidCard: signupData.rfidCard,
+        createdAt: new Date().toISOString(),
+      });
+
+      // 3. Success feedback and navigation
+      toast.success("Account created and profile saved successfully!");
+      navigate(`/dashboard/${role}`);
+
+    } catch (error: any) {
+      console.error("Firebase Signup Error:", error);
+      
+      let errorMessage = "Registration failed. Please try again.";
+      if (error.code === 'auth/email-already-in-use') {
+        errorMessage = "This email address is already in use.";
+      } else if (error.code === 'auth/weak-password') {
+        errorMessage = "Password should be at least 6 characters.";
+      }
+
+      toast.error(errorMessage);
     }
   };
+  // -----------------------------
 
   return (
     <div className="min-h-screen cosmic-bg flex items-center justify-center p-4 relative overflow-hidden">

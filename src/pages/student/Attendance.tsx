@@ -1,3 +1,4 @@
+// src/pages/student/Attendance.tsx
 import { useState, useEffect } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -20,26 +21,10 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 
-interface AccessLog {
-  uid: string;
-  status: string;
-  timestamp: number;
-  date: string;
-}
+// IMPORT TYPES FROM GLOBAL FILE: We rely on the global '@/types' for consistency.
+import { AccessLog, Stats, Subject } from '@/types'; 
 
-interface Stats {
-  totalScans: number;
-  granted: number;
-  denied: number;
-}
-
-interface Subject {
-  id: string;
-  name: string;
-  totalClasses: number;
-  attendedClasses: number;
-}
-
+// Initial dummy data for subjects
 const INITIAL_SUBJECTS: Subject[] = [
   { id: "sub1", name: "Data Structures", totalClasses: 40, attendedClasses: 35 },
   { id: "sub2", name: "Algorithms", totalClasses: 38, attendedClasses: 30 },
@@ -88,7 +73,8 @@ const Attendance = () => {
     const unsubscribeSubjects = onValue(subjectsRef, (snapshot) => {
       const data = snapshot.val();
       if (data) {
-        setSubjects(Object.values(data));
+        // Explicitly cast to array of Subject[]
+        setSubjects(Object.values(data) as Subject[]);
       } else {
         // Initialize if empty
         set(ref(db, 'subjects'), INITIAL_SUBJECTS);
@@ -139,7 +125,7 @@ const Attendance = () => {
 
     // 2. Update stats
     const statsRef = ref(db, 'stats');
-    await runTransaction(statsRef, (currentStats) => {
+    await runTransaction(statsRef, (currentStats: Stats) => {
       if (!currentStats) {
         return { totalScans: 1, granted: isGranted ? 1 : 0, denied: isGranted ? 0 : 1 };
       }
@@ -156,7 +142,7 @@ const Attendance = () => {
       const subject = subjects[randomSubjectIndex];
       const subjectRef = ref(db, `subjects/${randomSubjectIndex}`);
 
-      await runTransaction(subjectRef, (currentSubject) => {
+      await runTransaction(subjectRef, (currentSubject: Subject) => {
         if (!currentSubject) return subject;
         return {
           ...currentSubject,
@@ -276,7 +262,8 @@ const Attendance = () => {
         <div className="flex justify-between items-center mb-6">
           <Button
             variant="ghost"
-            onClick={() => navigate("/dashboard/student")}
+            type="button" // <--- ENSURES IT BEHAVES AS A BUTTON
+            onClick={() => navigate("/dashboard/student")} 
           >
             <ArrowLeft className="w-4 h-4 mr-2" />
             Back to Dashboard

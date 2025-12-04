@@ -1,14 +1,22 @@
-import { initializeApp } from "firebase/app";
-import { getDatabase } from "firebase/database";
+// src/lib/firebase.ts
+import { initializeApp, FirebaseApp } from "firebase/app";
+import { getDatabase, Database } from "firebase/database";
+import { getAuth, Auth } from "firebase/auth"; // <-- NEW IMPORT
 
-// Credentials from ESP32 code
+// Your provided Firebase configuration
 const firebaseConfig = {
-  apiKey: "AIzaSyBlB7hUTk-6kw6qr57ttkqzzzpSr2zdFVE",
-  databaseURL: "https://rfid-fb4d0-default-rtdb.asia-southeast1.firebasedatabase.app",
-  // The ESP32 code uses email/password auth, but for the web client we might need
-  // to use the same if rules require it, or just rely on public read if rules allow.
-  // For now, we'll initialize the app. If we need auth, we'll add it.
+  apiKey: "AIzaSyD6WlOiIgdG19o-yP-xozjVl85N1m9nGbQ",
+  authDomain: "iot-rfid-89e01.firebaseapp.com",
+  databaseURL: "https://iot-rfid-89e01-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "iot-rfid-89e01",
+  storageBucket: "iot-rfid-89e01.firebasestorage.app",
+  messagingSenderId: "390086025224",
+  appId: "1:390086025224:web:9aec96443919a74702b1bd"
 };
 
-const app = initializeApp(firebaseConfig);
-export const db = getDatabase(app);
+// Initialize Firebase App
+const app: FirebaseApp = initializeApp(firebaseConfig);
+
+// Initialize Services and Export them with explicit types
+export const db: Database = getDatabase(app);
+export const auth: Auth = getAuth(app); // <-- EXPORTED AUTH SERVICE
